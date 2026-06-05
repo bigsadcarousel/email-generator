@@ -1,0 +1,11 @@
+# Personal contact data — never commit. Keep all real CSVs local.
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
