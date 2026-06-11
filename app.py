@@ -231,6 +231,7 @@ PAGE = r"""<!DOCTYPE html>
 <script>
 const $ = s => document.querySelector(s);
 const PATTERNS = ["first.last","firstlast","flast","f.last","first","firstl"];
+const MAX_ROWS = 40000;  // verifier upload cap -- split bigger files into parts
 
 function setupDrop(dropId, onText){
   const drop = $(dropId);
@@ -277,6 +278,34 @@ function dlButton(label, name, text){
   b.onclick = () => download(name, text);
   return b;
 }
+// Split a CSV into parts of at most MAX_ROWS data rows, repeating the header in
+// each. Fields here (names, domains, emails) never contain newlines, so a plain
+// line split is safe.
+function splitCsv(text, maxRows){
+  const lines = text.split(/\r?\n/);
+  const header = lines[0];
+  const body = lines.slice(1).filter(l => l.length > 0);
+  if (body.length <= maxRows) return [text];
+  const parts = [];
+  for (let i = 0; i < body.length; i += maxRows){
+    parts.push([header, ...body.slice(i, i + maxRows)].join("\r\n") + "\r\n");
+  }
+  return parts;
+}
+// Add one download button, or one per part with a clear name when the file is
+// over the row cap.
+function addDownload(container, label, name, text){
+  const parts = splitCsv(text, MAX_ROWS);
+  if (parts.length === 1){
+    container.appendChild(dlButton("⬇ " + label, name, text));
+    return;
+  }
+  const base = name.replace(/\.csv$/i, "");
+  parts.forEach((p, i) =>
+    container.appendChild(dlButton(
+      `⬇ ${label} — part ${i + 1}/${parts.length}`,
+      `${base}_part${i + 1}_of_${parts.length}.csv`, p)));
+}
 
 // tabs
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
@@ -313,7 +342,7 @@ $("#gen-go").onclick = async () => {
     $("#gen-detail").textContent =
       `from ${r.stats.contacts_read.toLocaleString()} contacts · ${r.stats.blank_rows} had no usable name/domain`;
     const dls = $("#gen-dls"); dls.innerHTML = "";
-    dls.appendChild(dlButton("⬇ Download candidate emails", r.filename, r.csv));
+    addDownload(dls, "Download candidate emails", r.filename, r.csv);
     $("#gen-res").classList.add("show");
   } catch(e){ showErr("#gen-err", e); }
 };
@@ -354,8 +383,8 @@ $("#ded-go").onclick = async () => {
       `Order used: ${s.global_order.join(" › ")} · ${s.conventions} domains had a learned convention · ` +
       `${s.permissive_domains.length} permissive domains flagged.`;
     const dls = $("#ded-dls"); dls.innerHTML = "";
-    dls.appendChild(dlButton("⬇ Download deduped (one per lead)", r.deduped.filename, r.deduped.csv));
-    dls.appendChild(dlButton("⬇ Download dropped aliases", r.dropped.filename, r.dropped.csv));
+    addDownload(dls, "Download deduped (one per lead)", r.deduped.filename, r.deduped.csv);
+    addDownload(dls, "Download dropped aliases", r.dropped.filename, r.dropped.csv);
     $("#ded-res").classList.add("show");
   } catch(e){ showErr("#ded-err", e); }
 };
