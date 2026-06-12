@@ -19,7 +19,7 @@ python3 app.py
 Opens `http://localhost:8000` in your browser. Two tabs:
 
 - **① Generate** — drop a contact CSV, confirm the First / Last / Domain columns (auto-detected), tick which email patterns to produce, and download the candidate list.
-- **② Dedupe** — drop the verifier's "Good Emails Only" export, review the breakdown, and download the deduped file (one per lead) plus the dropped aliases.
+- **② Dedupe** — drop the verifier's "Good Emails Only" export, confirm the First / Last / Title / Company / Domain / Email columns (auto-detected), review the breakdown, and download the deduped file (one per lead) plus the dropped aliases.
 
 No data is written to disk except the files you choose to download.
 
@@ -51,13 +51,23 @@ Output is long-format: one row per candidate, ready to upload to a verifier.
 
 ## How dedupe works
 
-The verifier marks every deliverable guess `ok`, so one person can come back with several. The deduper keeps **one email per lead** and tags how much to trust it:
+The verifier marks every deliverable guess `ok`, so one person can come back with several. The deduper keeps **one email per lead**, judges how much to trust it, and **splits the result so your main send list is only the clean, verified addresses**:
 
-- **1 verified email** → keep it. `confidence = verified`.
-- **2–3 verified** → real aliases; pick the canonical one. It prefers the **company's own observed convention** (learned from coworkers whose email was unambiguous), falling back to the most common format overall. `confidence = high`.
-- **4–6 verified, or a domain that accepts almost everything** → catch-all; the `ok` is unreliable. Still picks one, but flags `confidence = low_catchall` — use with caution.
+- **1 `ok` on a normal domain** → trustworthy. → **verified list** (the deliverable).
+- **2–3 `ok`** → real aliases; pick the canonical one (prefers the **company's own observed convention**, learned from coworkers whose email was unambiguous, else the most common format overall). → other-leads file, `confidence = high`.
+- **4–6 `ok`, or any domain proven to be catch-all** → the `ok` is unreliable. → other-leads file, `confidence = low_catchall`.
 
-Dropped aliases are saved to a separate file (they still deliver) for a full audit trail. The input file is never modified.
+**Catch-all detection.** A domain is treated as catch-all if it accepts mail on volume (many leads, lots of `ok`s each) **or** if even a single lead returns ~all 6 patterns as `ok` — nobody owns five working aliases, so one such lead proves the domain accepts everything. A lone `ok` on a catch-all domain confirms nothing, so it's kept *out* of the verified list too. This is the main lever against "valid but unmonitored / auto-reply" mailboxes.
+
+Output files (all trimmed to **first name, last name, title, company, email**):
+
+| File | Contents |
+|---|---|
+| `*_deduped.csv` | **Verified list** — your clean send list. |
+| `*_deduped_other.csv` | Alias / catch-all leads (+ a `confidence` column). Send cautiously or skip. |
+| `*_deduped_dropped.csv` | Aliases set aside from multi-`ok` leads, full original columns, for audit. |
+
+The input file is never modified.
 
 ---
 

@@ -103,12 +103,17 @@ class Handler(BaseHTTPRequestHandler):
         if not header:
             raise ValueError("That file looks empty or isn't a CSV.")
         m = req["map"]
-        out_h, out_rows, drop_h, drop_rows, stats = email_core.dedupe(
+        def opt(key):
+            v = m.get(key)
+            return int(v) if v not in (None, "") else None
+
+        out_h, out_rows, other_h, other_rows, drop_h, drop_rows, stats = email_core.dedupe(
             header, rows, int(m["first"]), int(m["last"]),
-            int(m["domain"]), int(m["email"]))
+            int(m["domain"]), int(m["email"]), opt("title"), opt("company"))
         self._json(200, {
             "stats": stats,
-            "deduped": {"csv": to_csv(out_h, out_rows), "filename": "verified_deduped.csv"},
+            "verified": {"csv": to_csv(out_h, out_rows), "filename": "verified_deduped.csv"},
+            "other": {"csv": to_csv(other_h, other_rows), "filename": "verified_other_leads.csv"},
             "dropped": {"csv": to_csv(drop_h, drop_rows), "filename": "verified_dropped.csv"},
         })
 
@@ -208,6 +213,8 @@ PAGE = r"""<!DOCTYPE html>
       <div class="row">
         <div class="fld"><label>First name column</label><select id="ded-first"></select></div>
         <div class="fld"><label>Last name column</label><select id="ded-last"></select></div>
+        <div class="fld"><label>Title column</label><select id="ded-title"></select></div>
+        <div class="fld"><label>Company column</label><select id="ded-company"></select></div>
         <div class="fld"><label>Company domain column</label><select id="ded-domain"></select></div>
         <div class="fld"><label>Email column</label><select id="ded-email"></select></div>
       </div>
@@ -216,7 +223,7 @@ PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="err" id="ded-err"></div>
     <div class="result" id="ded-res">
-      <div class="stat"><span class="big" id="ded-count">0</span><span>unique leads</span></div>
+      <div class="stat"><span class="big" id="ded-count">0</span><span>verified leads (clean send)</span></div>
       <div style="margin:12px 0">
         <span class="pill v" id="p-v"></span>
         <span class="pill h" id="p-h"></span>
@@ -356,6 +363,8 @@ setupDrop("#ded-drop", async (text, name) => {
     const r = await post("/api/inspect", {csv:text});
     fillSelect($("#ded-first"), r.header, r.guess.first ?? 0);
     fillSelect($("#ded-last"), r.header, r.guess.last ?? 0);
+    fillSelect($("#ded-title"), r.header, r.guess.title ?? 0);
+    fillSelect($("#ded-company"), r.header, r.guess.company ?? 0);
     fillSelect($("#ded-domain"), r.header, r.guess.domain ?? 0);
     fillSelect($("#ded-email"), r.header, r.guess.email ?? 0);
     $("#ded-cfg").style.display = "block";
@@ -368,22 +377,23 @@ $("#ded-go").onclick = async () => {
   try {
     const r = await post("/api/dedupe", {csv:dedCsv, map:{
       first:$("#ded-first").value, last:$("#ded-last").value,
+      title:$("#ded-title").value, company:$("#ded-company").value,
       domain:$("#ded-domain").value, email:$("#ded-email").value}});
     const s = r.stats;
-    $("#ded-count").textContent = s.leads_out.toLocaleString();
+    $("#ded-count").textContent = s.verified_out.toLocaleString();
     $("#p-v").textContent = `${s.confidence.verified} verified`;
     $("#p-h").textContent = `${s.confidence.high} high`;
     $("#p-l").textContent = `${s.confidence.low_catchall} low / catch-all`;
     $("#ded-table").innerHTML = `
-      <tr><td>1 verified email (clean)</td><td class="n">${s.buckets["1"]}</td></tr>
-      <tr><td>2–3 verified (real aliases)</td><td class="n">${s.buckets["2-3"]}</td></tr>
-      <tr><td>4–6 verified (catch-all-lite)</td><td class="n">${s.buckets["4-6"]}</td></tr>
+      <tr><td>verified — clean send list</td><td class="n">${s.verified_out}</td></tr>
+      <tr><td>other (real aliases / catch-all)</td><td class="n">${s.other_out}</td></tr>
       <tr><td>aliases set aside</td><td class="n">${s.dropped}</td></tr>`;
     $("#ded-note").textContent =
       `Order used: ${s.global_order.join(" › ")} · ${s.conventions} domains had a learned convention · ` +
-      `${s.permissive_domains.length} permissive domains flagged.`;
+      `${s.catchall_domains.length} catch-all domains excluded from the verified list.`;
     const dls = $("#ded-dls"); dls.innerHTML = "";
-    addDownload(dls, "Download deduped (one per lead)", r.deduped.filename, r.deduped.csv);
+    addDownload(dls, "Download VERIFIED list (clean send)", r.verified.filename, r.verified.csv);
+    addDownload(dls, "Download other leads (alias / catch-all)", r.other.filename, r.other.csv);
     addDownload(dls, "Download dropped aliases", r.dropped.filename, r.dropped.csv);
     $("#ded-res").classList.add("show");
   } catch(e){ showErr("#ded-err", e); }

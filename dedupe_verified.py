@@ -39,28 +39,35 @@ def run(input_file, output_file):
     if missing:
         sys.exit(f"Could not find column(s) for: {', '.join(missing)} in header {header}")
 
-    out_h, out_rows, drop_h, drop_rows, stats = email_core.dedupe(
-        header, data, guess["first"], guess["last"], guess["domain"], guess["email"])
+    out_h, out_rows, other_h, other_rows, drop_h, drop_rows, stats = email_core.dedupe(
+        header, data, guess["first"], guess["last"], guess["domain"],
+        guess["email"], guess["title"], guess["company"])
 
+    base = output_file.replace(".csv", "")
     with open(output_file, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerows([out_h] + out_rows)
-    dropped_file = output_file.replace(".csv", "") + "_dropped.csv"
+    other_file = base + "_other.csv"
+    with open(other_file, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerows([other_h] + other_rows)
+    dropped_file = base + "_dropped.csv"
     with open(dropped_file, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerows([drop_h] + drop_rows)
 
     print(f"Verified rows read:       {stats['rows_read']}")
-    print(f"Unique leads (out):       {stats['leads_out']}")
+    print(f"Unique leads:             {stats['leads_out']}")
+    print(f"  VERIFIED (clean send):  {stats['verified_out']}")
+    print(f"  Other (alias/catchall): {stats['other_out']}")
     print(f"Aliases dropped:          {stats['dropped']}")
-    print(f"  check: {stats['leads_out']} + {stats['dropped']} = "
-          f"{stats['leads_out'] + stats['dropped']} (should equal rows read)")
     print(f"Empirical global order:   {' > '.join(stats['global_order'])}")
     print(f"Domains with a learned convention: {stats['conventions']}")
-    print(f"Permissive (catch-all-lite) domains: {len(stats['permissive_domains'])}")
+    print(f"Catch-all domains detected: {len(stats['catchall_domains'])} "
+          f"({len(stats['permissive_domains'])} by volume, rest proven by a near-all-ok lead)")
     print("Confidence breakdown:")
     for k in ("verified", "high", "low_catchall"):
         print(f"  {k:<13} {stats['confidence'][k]}")
-    print(f"Output file:              {output_file}")
-    print(f"Dropped aliases file:     {dropped_file}")
+    print(f"Verified file (deliverable): {output_file}")
+    print(f"Other leads file:            {other_file}")
+    print(f"Dropped aliases file:        {dropped_file}")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,9 @@ _BUILDERS = dict(PATTERNS)
 
 # Dedupe tuning (see the diagnosis we ran on the real export).
 CATCHALL_LEAD_THRESHOLD = 4      # this many verified guesses == treat as catch-all
-PERMISSIVE_MIN_LEADS = 3         # a domain needs this many leads to be judged
+CATCHALL_PROVEN_OKS = 5          # a single lead with this many oks proves the
+                                 # whole domain is catch-all (nobody owns 5+ aliases)
+PERMISSIVE_MIN_LEADS = 3         # a domain needs this many leads for the avg rule
 PERMISSIVE_MIN_RATIO = 4.0       # ...averaging this many verified emails each
 CONVENTION_MIN_EXAMPLES = 2      # unambiguous leads needed to trust a convention
 
@@ -45,20 +47,28 @@ def clean(value):
 
 
 def _cell(row, idx):
+    if idx is None:
+        return ""
     return row[idx].strip() if 0 <= idx < len(row) else ""
 
 
 def guess_columns(header):
-    """Best-guess column indexes for first/last/domain/email by header name."""
-    guess = {"first": None, "last": None, "domain": None, "email": None}
+    """Best-guess column indexes for the fields we map, by header name."""
+    guess = {"first": None, "last": None, "title": None,
+             "company": None, "domain": None, "email": None}
     for i, name in enumerate(header):
         n = name.lower().strip()
         if guess["first"] is None and "first" in n:
             guess["first"] = i
         if guess["last"] is None and "last" in n and "name" in n:
             guess["last"] = i
+        if guess["title"] is None and "title" in n:
+            guess["title"] = i
         if guess["domain"] is None and "domain" in n:
             guess["domain"] = i
+        # company name, but not the company *domain* column
+        if guess["company"] is None and "company" in n and "domain" not in n:
+            guess["company"] = i
         if guess["email"] is None and n == "email":
             guess["email"] = i
     # looser email fallback
@@ -120,10 +130,24 @@ def generate_candidates(header, rows, col_first, col_last, col_domain, enabled=N
 
 # ---- Dedupe ----------------------------------------------------------------
 
-def dedupe(header, rows, col_first, col_last, col_domain, col_email):
-    """Collapse verified rows to one email per lead, tagged by confidence.
+# The final deduped sheet is projected down to exactly these fields.
+OUTPUT_COLUMNS = ["first name", "last name", "title", "company", "email"]
 
-    Returns (out_header, out_rows, dropped_header, dropped_rows, stats).
+
+def dedupe(header, rows, col_first, col_last, col_domain, col_email,
+           col_title=None, col_company=None):
+    """Collapse verified rows to one email per lead and split by confidence.
+
+    All output rows are projected to OUTPUT_COLUMNS (first name, last name,
+    title, company, email). Leads are split into:
+      * verified -- exactly one ok on a non-catch-all domain. The clean send
+        list. This is the deliverable.
+      * other    -- multi-ok leads (real aliases) or anything on a catch-all
+        domain; the kept pick plus a trailing `confidence` column.
+    The dropped-aliases sheet keeps the full original rows for an audit trail.
+
+    Returns (verified_header, verified_rows, other_header, other_rows,
+             dropped_header, dropped_rows, stats).
     """
     # group rows by lead -> list of (row, pattern_label)
     leads = defaultdict(list)
@@ -164,28 +188,41 @@ def dedupe(header, rows, col_first, col_last, col_domain, col_email):
 
     # permissive (catch-all-lite) domains: many leads, lots of oks each
     dcount = defaultdict(lambda: [0, 0])
+    max_oks = defaultdict(int)
     for key, cands in leads.items():
-        dcount[lead_domain[key]][0] += 1
-        dcount[lead_domain[key]][1] += len(cands)
+        d = lead_domain[key]
+        dcount[d][0] += 1
+        dcount[d][1] += len(cands)
+        max_oks[d] = max(max_oks[d], len(cands))
     permissive = {
         d for d, (nl, ne) in dcount.items()
         if nl >= PERMISSIVE_MIN_LEADS and ne / nl >= PERMISSIVE_MIN_RATIO
     }
+    # A single lead returning ~every pattern is decisive proof the domain is
+    # catch-all -- no real person owns 5-6 working aliases. This catches the
+    # catch-all domains that have too few leads for the averaging rule to flag,
+    # so even their 1-ok leads are correctly distrusted.
+    catchall = permissive | {d for d, m in max_oks.items() if m >= CATCHALL_PROVEN_OKS}
 
-    out = []
-    dropped = []
+    verified = []   # the clean send list: 1 ok, non-catch-all domain
+    other = []      # everyone else (multi-ok aliases or catch-all), tagged
+    dropped = []    # aliases set aside from multi-ok leads (audit trail)
     conf_counts = Counter()
     bucket_counts = {"1": 0, "2-3": 0, "4-6": 0}
 
     for key, cands in leads.items():
         domain = lead_domain[key]
         n = len(cands)
+        is_catchall = domain in catchall
         bucket_counts["1" if n == 1 else "2-3" if n <= 3 else "4-6"] += 1
 
-        if n == 1:
+        if n == 1 and not is_catchall:
             chosen_row, reason, confidence = cands[0][0], "sole_ok", "verified"
+        elif n == 1:
+            # a lone ok on a proven catch-all domain confirms nothing
+            chosen_row, reason, confidence = cands[0][0], "sole_ok_on_catchall", "low_catchall"
         else:
-            confidence = "low_catchall" if (n >= CATCHALL_LEAD_THRESHOLD or domain in permissive) else "high"
+            confidence = "low_catchall" if (n >= CATCHALL_LEAD_THRESHOLD or is_catchall) else "high"
             labels = {}
             for row, label in cands:
                 labels.setdefault(label, row)  # first wins
@@ -197,7 +234,17 @@ def dedupe(header, rows, col_first, col_last, col_domain, col_email):
                 reason = f"global_priority:{chosen_label}"
             chosen_row = labels[chosen_label]
 
-        out.append(chosen_row + [confidence, reason])
+        proj = [
+            _cell(chosen_row, col_first),
+            _cell(chosen_row, col_last),
+            _cell(chosen_row, col_title),
+            _cell(chosen_row, col_company),
+            _cell(chosen_row, col_email),
+        ]
+        if confidence == "verified":
+            verified.append(proj)
+        else:
+            other.append(proj + [confidence])
         conf_counts[confidence] += 1
         kept_email = _cell(chosen_row, col_email)
         for row, _ in cands:
@@ -207,12 +254,16 @@ def dedupe(header, rows, col_first, col_last, col_domain, col_email):
     stats = {
         "rows_read": sum(len(c) for c in leads.values()),
         "leads_out": len(leads),
+        "verified_out": len(verified),
+        "other_out": len(other),
         "dropped": len(dropped),
         "buckets": bucket_counts,
         "confidence": {k: conf_counts[k] for k in ("verified", "high", "low_catchall")},
         "global_order": global_order[:len(PATTERN_NAMES)],
         "conventions": len(conventions),
         "permissive_domains": sorted(permissive),
+        "catchall_domains": sorted(catchall),
     }
-    return (header + ["confidence", "pick_reason"], out,
+    return (list(OUTPUT_COLUMNS), verified,
+            list(OUTPUT_COLUMNS) + ["confidence"], other,
             header + ["confidence_of_kept", "kept_email"], dropped, stats)
